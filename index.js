@@ -21,19 +21,22 @@ wss.on('connection', (ws) => {
     let currentRoom = null;
     let playerId = null;
     let pName = "";
+    let isHost = false; // متغير جديد لمعرفة ما إذا كان هذا الاتصال يخص المضيف
 
     console.log('🌐 [CONNECTION] جهاز جديد اتصل بالسيرفر الآن.');
 
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            console.log(`📥 [RECEIVED]:`, data);
+            // تم إيقاف طباعة كل حزمة لمنع امتلاء الكونسول أثناء اللعب (يمكنك تفعيله عند الحاجة)
+            // console.log(`📥 [RECEIVED]:`, data.action); 
 
             // 1️⃣ إنشاء غرفة جديدة (المضيف / Host)
             if (data.action === "create_room") {
                 playerId = data.player_id;
                 currentRoom = data.room_code;
                 pName = data.player_name || "Host";
+                isHost = true;
 
                 // تهيئة هيكل الغرفة الشامل
                 rooms[currentRoom] = {
@@ -47,7 +50,6 @@ wss.on('connection', (ws) => {
 
                 console.log(`🏠 [ROOM CREATED] المضيف [${pName}] أنشأ الغرفة بنجاح بكود: ${currentRoom}`);
                 
-                // إرسال تأكيد فوري للمضيف بأن الغرفة مسجلة
                 ws.send(JSON.stringify({ 
                     action: "room_created", 
                     room_code: currentRoom 
@@ -59,28 +61,24 @@ wss.on('connection', (ws) => {
                 playerId = data.player_id;
                 let targetRoom = data.room_code;
                 pName = data.player_name || "Guest";
+                isHost = false;
 
-                // التحقق من وجود الغرفة
                 if (targetRoom && rooms[targetRoom]) {
                     currentRoom = targetRoom;
                     
-                    // إضافة الضيف إلى قائمة لاعبي الغرفة
                     rooms[currentRoom].players[playerId] = { ws: ws, name: pName, id: playerId };
-                    
                     console.log(`🤝 [JOIN SUCCESS] اللاعب [${pName}] انضم للغرفة: ${currentRoom}`);
 
                     const hostId = rooms[currentRoom].host;
                     const hostNode = rooms[currentRoom].players[hostId];
 
-                    // [تأكيد فوري ودقيق للضيف]: أرسل له بيانات المضيف فوراً
+                    // تأكيد الدخول للضيف
                     ws.send(JSON.stringify({ 
                         action: "joined_success", 
-                        room_code: currentRoom,
-                        player_id: hostId,
-                        player_name: hostNode ? hostNode.name : "Host"
+                        room_code: currentRoom
                     }));
 
-                    // [تأكيد فوري ودقيق للمضيف]: أخبره بدخول الضيف ليقوم بفتح اتصال الـ WebRTC
+                    // إعلام المضيف بدخول الضيف
                     if (hostNode && hostNode.ws.readyState === ws.OPEN) {
                         hostNode.ws.send(JSON.stringify({ 
                             action: "player_joined", 
@@ -89,16 +87,13 @@ wss.on('connection', (ws) => {
                         }));
                     }
 
-                    /* 
-                       🔥 التفصيل الدقيق الحاسم:
-                       إجبار السيرفر على إرسال نبضة ربط إضافية بعد 500 ملي ثانية 
-                       لضمان تحديث واجهة الهواتف وإظهار الشخصيات الاثنين حتى لو سقطت الحزمة الأولى!
-                    */
+                    // نبضة الإجبار (Force Sync)
                     setTimeout(() => {
                         if (rooms[currentRoom] && rooms[currentRoom].players[playerId]) {
                             ws.send(JSON.stringify({ 
                                 action: "game_update", 
-                                player_id: hostId,
+                                // ✅ التعديل الحاسم: نرسل 1 لأن جودو يعتبر المضيف دائماً 1
+                                player_id: 1, 
                                 game_data: { type: "force_sync" }
                             }));
                         }
@@ -113,16 +108,19 @@ wss.on('connection', (ws) => {
                 }
             }
 
-            // 3️⃣ التمرير الدقيق والمباشر لحزم الـ WebRTC (Offers, Answers, Candidates)
+            // 3️⃣ التمرير الدقيق والمباشر لحزم الـ WebRTC
             if (data.action === "game_update" && currentRoom && rooms[currentRoom]) {
-                // إرسال البيانات لكل اللاعبين الآخرين في الغرفة باستثناء المرسل نفسه
                 Object.keys(rooms[currentRoom].players).forEach((id) => {
                     if (id !== playerId) {
                         const targetPlayer = rooms[currentRoom].players[id];
                         if (targetPlayer && targetPlayer.ws.readyState === ws.OPEN) {
+                            
+                            // ✅ التعديل الحاسم: إذا كان المرسل هو المضيف، يجب أن يصل للضيف كأنه رقم 1
+                            const senderIdForGodot = isHost ? 1 : playerId;
+
                             targetPlayer.ws.send(JSON.stringify({
                                 action: "game_update",
-                                player_id: playerId,
+                                player_id: senderIdForGodot,
                                 game_data: data.game_data
                             }));
                         }
@@ -140,23 +138,20 @@ wss.on('connection', (ws) => {
         console.log(`🔌 [DISCONNECTED] انقطع اتصال أحد الأجهزة.`);
         
         if (currentRoom && rooms[currentRoom]) {
-            // إعلام بقية اللاعبين برحيل هذا اللاعب
             Object.keys(rooms[currentRoom].players).forEach((id) => {
                 if (id !== playerId) {
                     const targetPlayer = rooms[currentRoom].players[id];
                     if (targetPlayer && targetPlayer.ws.readyState === ws.OPEN) {
                         targetPlayer.ws.send(JSON.stringify({ 
-                            action: "player_left", 
-                            player_id: playerId 
+                            action: "player_left"
                         }));
                     }
                 }
             });
 
-            // حذف اللاعب من الغرفة
             delete rooms[currentRoom].players[playerId];
             
-            // إذا غادر المضيف أو أصبحت الغرفة فارغة تماماً، يتم تدميرها فوراً
+            // تدمير الغرفة إذا خرج المضيف أو أصبحت فارغة
             if (Object.keys(rooms[currentRoom].players).length === 0 || rooms[currentRoom].host === playerId) {
                 console.log(`🗑️ [ROOM CLEANUP] تم تنظيف وإغلاق الغرفة: ${currentRoom}`);
                 delete rooms[currentRoom];
@@ -165,7 +160,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-// تشغيل السيرفر على البورت المحدد
 server.listen(port, () => {
     console.log(`🚀 [VONE SERVER] يعمل بكفاءة مطلقة الآن على بورت: ${port}`);
 });
+
