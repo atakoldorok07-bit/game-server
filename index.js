@@ -33,7 +33,7 @@ wss.on('connection', (ws) => {
             if (data.action === "create_room") {
                 playerId = data.player_id;
                 currentRoom = data.room_code;
-                pName = data.player_name || "Host";
+                pName = data.player_name || "Host (Player 1)";
 
                 rooms[currentRoom] = {
                     players: { 
@@ -51,7 +51,7 @@ wss.on('connection', (ws) => {
             if (data.action === "join_room") {
                 playerId = data.player_id;
                 let targetRoom = data.room_code;
-                pName = data.player_name || "Guest";
+                pName = data.player_name || "Guest (Player 2)";
 
                 if (targetRoom && rooms[targetRoom] && rooms[targetRoom].status === "waiting") {
                     currentRoom = targetRoom;
@@ -60,23 +60,26 @@ wss.on('connection', (ws) => {
 
                     console.log(`🤝 [PLAYER JOINED] اللاعب [${pName}] انضم للغرفة: ${currentRoom}`);
 
-                    // إرسال نجاح الدخول للضيف نفسه
-                    ws.send(JSON.stringify({ action: "joined_success", room_code: currentRoom }));
-
-                    // 🔥 الخدعة الجوهرية: جلب اسم الـ Host وإرسال إشارة المزامنة الفورية للطرفين معاً
                     const playersInRoom = rooms[currentRoom].players;
                     const hostId = rooms[currentRoom].host;
                     const hostName = playersInRoom[hostId].name;
 
-                    Object.keys(playersInRoom).forEach((id) => {
-                        playersInRoom[id].ws.send(JSON.stringify({ 
-                            action: "lobby_sync", 
-                            host_name: hostName,
-                            guest_name: pName,
-                            is_ready: true
-                        }));
-                    });
-                    console.log(`📡 [LOBBY SYNC] تم إرسال بيانات الأسماء والمزامنة قسرياً لـ ${hostName} و ${pName}`);
+                    // إرسال نجاح الدخول للضيف نفسه وتمرير اسم الـ Host له
+                    ws.send(JSON.stringify({ 
+                        action: "joined_success", 
+                        room_code: currentRoom,
+                        player_id: hostId,
+                        player_name: hostName
+                    }));
+
+                    // إرسال تنبيه للمضيف (Host) بأن الضيف دخل وتمرير اسم الضيف الحقيقي له فوراً
+                    playersInRoom[hostId].ws.send(JSON.stringify({ 
+                        action: "player_joined", 
+                        player_id: playerId,
+                        player_name: pName
+                    }));
+
+                    console.log(`📡 [LOBBY SYNC] تم ربط وتمرير الأسماء بين المضيف (${hostName}) والضيف (${pName}) بنجاح.`);
                 } else {
                     console.log(`❌ [JOIN FAILED] محاولة فاشلة لدخول الغرفة: ${targetRoom}`);
                     ws.send(JSON.stringify({ action: "error", message: "الغرفة غير موجودة أو ممتلئة باللاعبين!" }));
@@ -112,8 +115,16 @@ wss.on('connection', (ws) => {
                 rooms[currentRoom].players[id].ws.send(JSON.stringify({ action: "player_left", player_id: playerId }));
             });
             
-            // إذا أصبحت الغرفة فارغة تماماً يتم حذفها نهائياً لتوفير موارد السيرفر
-            if (Object.keys(rooms[currentRoom].players).length === 0) {
+            // إذا كان الخارج هو الـ Host، نغلق الغرفة بالكامل ونطرد البقية
+            if (rooms[currentRoom].host === playerId) {
+                console.log(`🏠 [HOST LEFT] المضيف غادر الغرفة، يتم طرد البقية وتدمير الغرفة.`);
+                Object.keys(rooms[currentRoom].players).forEach((id) => {
+                    rooms[currentRoom].players[id].ws.send(JSON.stringify({ action: "player_left" }));
+                });
+                delete rooms[currentRoom];
+            }
+            // إذا أصبحت الغرفة فارغة تماماً يتم حذفها نهائياً
+            else if (Object.keys(rooms[currentRoom].players).length === 0) {
                 console.log(`🗑️ [ROOM DELETED] تم تدمير الغرفة ${currentRoom} لعدم وجود لاعبين بها.`);
                 delete rooms[currentRoom];
             }
@@ -125,4 +136,3 @@ wss.on('connection', (ws) => {
 server.listen(port, () => {
     console.log(`🚀 [SERVER RUNNING] السيرفر المطور يعمل بنجاح على بورت: ${port}`);
 });
-                        
