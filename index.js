@@ -121,7 +121,13 @@ wss.on('connection', (ws, req) => {
                     }));
                 }
 
-                // 🔥 توجيه الضيف إجبارياً لإنشاء الـ Offer بعد استقرار البرتوكول بـ 200ms
+                // 🔥 الخدعة الفورية: إجبار واجهة جودوت في كلا الجهازين على إظهار النصوص والأسماء فوراً وتخطي جدار الحماية
+                if (currentRoom.host.ws.readyState === ws.OPEN) {
+                    currentRoom.host.ws.send(JSON.stringify({ action: "lobby_sync_forced" }));
+                }
+                ws.send(JSON.stringify({ action: "lobby_sync_forced" }));
+
+                // توجيه الضيف إجبارياً لإنشاء الـ Offer بعد استقرار البرتوكول بـ 200ms
                 setTimeout(() => {
                     const checkRoom = activeRooms.get(sessionRoomCode);
                     if (checkRoom && checkRoom.guest && checkRoom.guest.ws.readyState === ws.OPEN) {
@@ -196,4 +202,3 @@ wss.on('close', () => { clearInterval(networkInterval); });
 server.listen(port, () => {
     console.log(`[CORE] Enterprise Signaling Server deployed flawlessly on port ${port}`);
 });
-                    
