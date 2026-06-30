@@ -1,89 +1,203 @@
 // ==============================================================================
-// 🚀 index.js (المطور والمصحح لتخطي حظر الهاندشيك على Render المجاني)
+// 🌐 index.js - النسخة الاحترافية الكاملة المدمجة لنظام الغرف والمطابقة أونلاين
 // ==============================================================================
 const http = require('http');
-const { WebSocketServer } = require('ws');
+const WebSocket = require('ws');
 
-// إنشاء سيرفر HTTP عادي لإقناع منصة Render بأن التطبيق متصل ومستيقظ
+// 1. تحديد المنفذ ديناميكيًا لقراءة إعدادات منصة Render بشكل صحيح
+const PORT = process.env.PORT || 8080;
+
+// 2. إنشاء سيرفر HTTP أساسي لتخطي فحص الحالة (Health Check) الخاص بـ Render
 const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('🎮 Game Server is Running Live!\n');
+    if (req.url === '/health' || req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('🟢 سيرفر ألعاب Godot المطور يعمل بكفاءة أونلاين!');
+    } else {
+        res.writeHead(404);
+        res.end();
+    }
 });
 
-const PORT = process.env.PORT || 8910;
-const wss = new WebSocketServer({ server }); // ربط المقابس بسيرفر الـ HTTP
-const connectedPlayers = new Map();
+// 3. إنشاء مقبس الـ WebSocket وربطه مباشرة بسيرفر الـ HTTP
+const wss = new WebSocket.Server({ server: server });
 
-console.log(`====================================================`);
-console.log(`⚡ السيرفر المطور يعمل الآن بالبوابة الموحدة على المنفذ: ${PORT}`);
-console.log(`====================================================`);
+// جداول حفظ بيانات اللاعبين والغرف النشطة في الذاكرة
+const players = new Map();       // لربط اسم اللاعب بـ الـ Socket الخاص به
+const rooms = new Map();         // لحفظ الغرف: room_code -> البيانات
+let matchmakingQueue = [];       // طابور الانتظار للغرف العشوائية (Matchmaking)
+
+console.log(`=======================================================`);
+console.log(`🚀 السيرفر العالمي الموحد يعمل الآن بنجاح على المنفذ: ${PORT}`);
+console.log(`=======================================================`);
 
 wss.on('connection', (ws) => {
-    let registeredName = null;
+    let currentPlayerName = "";
+    console.log("📡 اتصال جديد قادم من أحد الهواتف...");
 
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            if (!data || !data.action) return;
+            const action = data.action;
 
-            switch (data.action) {
+            switch (action) {
+                
+                // 1️⃣ تسجيل اللاعب بربط اسمه بالاتصال الخاص به
                 case 'register':
-                    const playerName = data.name.trim().toLowerCase();
-                    registeredName = playerName;
-                    connectedPlayers.set(playerName, ws);
-                    console.log(`✅ مسجل أونلاين: [${data.name}]`);
+                    if (data.name && data.name.trim() !== "") {
+                        currentPlayerName = data.name.trim();
+                        players.set(currentPlayerName, ws);
+                        console.log(`✅ تم تسجيل اللاعب بنجاح: ${currentPlayerName}`);
+                    }
                     break;
 
+                // 2️⃣ إنشاء غرفة جديدة (يدوية أو عشوائية Matchmaking)
+                case 'create_room':
+                    const roomCode = data.room_code;
+                    const roomType = data.room_type || "Public";
+                    const creator = data.creator_name;
+
+                    if (!roomCode) break;
+
+                    // حفظ بيانات الغرفة في السيرفر
+                    rooms.set(roomCode, {
+                        creator: creator,
+                        type: roomType,
+                        players: [creator],
+                        status: "waiting"
+                    });
+
+                    console.log(`⚙️ تم فتح غرفة برمز: [${roomCode}] نوع: ${roomType} بواسطة: ${creator}`);
+                    
+                    // إذا كانت الغرفة مخصصة للمطابقة العشوائية، نضعها في طابور الانتظار
+                    if (roomType === "Matchmaking") {
+                        matchmakingQueue.push(roomCode);
+                    }
+                    break;
+
+                // 3️⃣ البحث التلقائي العشوائي عن الغرف (Matchmaking - ed_2)
+                case 'matchmaking':
+                    const seeker = data.sender_name;
+                    console.log(`🔍 اللاعب [${seeker}] يبحث عن مواجهة عشوائية...`);
+
+                    // تنظيف طابور الانتظار من الغرف الوهمية أو المغلقة
+                    matchmakingQueue = matchmakingQueue.filter(code => rooms.has(code));
+
+                    if (matchmakingQueue.length > 0) {
+                        // جلب أول غرفة في الطابور للمطابقة
+                        const targetRoomCode = matchmakingQueue.shift();
+                        const room = rooms.get(targetRoomCode);
+
+                        if (room && room.creator !== seeker) {
+                            room.players.push(seeker);
+                            room.status = "playing";
+
+                            // إبلاغ اللاعب الذي يبحث بنجاح العثور على الغرفة المستهدفة
+                            ws.send(JSON.stringify({
+                                action: "friend_found",
+                                target: room.creator
+                            }));
+
+                            // ربط الاسمين وتحديث بيانات الاتصال للطرف الآخر
+                            const creatorSocket = players.get(room.creator);
+                            if (creatorSocket) {
+                                creatorSocket.send(JSON.stringify({
+                                    action: "receive_request",
+                                    sender: seeker
+                                }));
+                            }
+                            console.log(`🎮 تمت المطابقة بنجاح! اللاعب [${seeker}] انضم لغرفة [${room.creator}]`);
+                        } else {
+                            ws.send(JSON.stringify({ action: "room_not_found" }));
+                        }
+                    } else {
+                        // لا توجد غرف متاحة حالياً، نبلغ الواجهة بـ Room Not Found ليتصرف السكريبت
+                        ws.send(JSON.stringify({
+                            action: "room_not_found",
+                            reason: "No available rooms"
+                        }));
+                    }
+                    break;
+
+                // 4️⃣ طلب انضمام لاعب لغرفة معينة باسمها أو كودها (ed_3)
                 case 'send_request':
-                    const targetName = data.target.trim().toLowerCase();
+                    const targetFriend = data.target;
                     const senderName = data.sender;
 
-                    if (connectedPlayers.has(targetName)) {
-                        const targetSocket = connectedPlayers.get(targetName);
-                        targetSocket.send(JSON.stringify({
-                            action: 'receive_request',
-                            sender: senderName
-                        }));
+                    console.log(`📡 طلب اتصال يدوي من [${senderName}] إلى [${targetFriend}]`);
+
+                    // الفحص: هل توجد غرفة مسجلة باسم هذا الصديق أو الكود؟
+                    let foundRoomCode = null;
+                    for (let [code, rDetails] of rooms.entries()) {
+                        if (code === targetFriend || rDetails.creator === targetFriend) {
+                            foundRoomCode = code;
+                            break;
+                        }
+                    }
+
+                    if (foundRoomCode) {
+                        const targetSocket = players.get(targetFriend);
                         
+                        // إرسال نجاح العثور للاعب المنضم لتشغيل دالة _on_join_success()
                         ws.send(JSON.stringify({
-                            action: 'friend_found',
-                            target: data.target
+                            action: "friend_found",
+                            target: targetFriend
                         }));
+
+                        // إعلام الطرف الآخر بطلب التوصيل
+                        if (targetSocket) {
+                            targetSocket.send(JSON.stringify({
+                                action: "receive_request",
+                                sender: senderName
+                            }));
+                        }
                     } else {
-                        ws.send(JSON.stringify({ 
-                            action: 'player_offline' 
-                        }));
-                        console.log(`❌ الاسم [${data.target}] غير متصل.`);
+                        // إرسال فشل العثور لتشغيل دالة _on_join_failed() وإظهار لوحة الـ Error
+                        ws.send(JSON.stringify({ action: "room_not_found" }));
                     }
                     break;
 
+                // 5️⃣ الربط النهائي وبدء تشغيل المشهد لكلا الهاتفين (bridge_players)
                 case 'bridge_players':
-                    const p1 = data.target.trim().toLowerCase();
-                    const p2 = data.sender.trim().toLowerCase();
+                    const p1 = data.sender; // الشخص الموافق
+                    const p2 = data.target; // الشخص المستهدف
 
-                    if (connectedPlayers.has(p1) && connectedPlayers.has(p2)) {
-                        const socketA = connectedPlayers.get(p1);
-                        const socketB = connectedPlayers.get(p2);
-                        const startSignal = JSON.stringify({ action: 'start_game_scene' });
-                        socketA.send(startSignal);
-                        socketB.send(startSignal);
-                    }
+                    const s1 = players.get(p1);
+                    const s2 = players.get(p2);
+
+                    const finalPayload = { action: "start_game_scene" };
+
+                    if (s1) s1.send(JSON.stringify(finalPayload));
+                    if (s2) s2.send(JSON.stringify(finalPayload));
+                    
+                    console.log(`⚡ تم ربط اللاعبين بنجاح وجاري نقلهم لمشهد اللعبة: ${p1} ⚔️ ${p2}`);
                     break;
             }
-        } catch (error) {
-            console.error(`🚨 خطأ معالجة:`, error.message);
+
+        } catch (e) {
+            console.error("⚠️ خطأ في معالجة الحزمة النصية الواردة:", e.message);
         }
     });
 
+    // إدارة انقطاع الاتصال المفاجئ من الهواتف لتنظيف السيرفر ومنع تعليق الذاكرة
     ws.on('close', () => {
-        if (registeredName) {
-            connectedPlayers.delete(registeredName);
-            console.log(`🧹 غادر وتم مسحه: [${registeredName}]`);
+        if (currentPlayerName !== "") {
+            console.log(`❌ غادر اللاعب السيرفر: ${currentPlayerName}`);
+            players.delete(currentPlayerName);
+
+            // حذف أي غرف كان قد أنشأها لمنع دخول لاعبين لغرف وهمية
+            for (let [code, room] of rooms.entries()) {
+                if (room.creator === currentPlayerName) {
+                    rooms.delete(code);
+                    matchmakingQueue = matchmakingQueue.filter(c => c !== code);
+                    console.log(`🧹 تم تنظيف وإغلاق الغرفة المهجورة: ${code}`);
+                }
+            }
         }
     });
 });
 
-// بدء الاستماع الفعلي للمنفذ المعين من ريندر
+// 4. بدء الإنصات والاستماع على المنفذ المحدد من ريندر
 server.listen(PORT, () => {
-    console.log(`📡 السيرفر يستقبل الاتصالات الحية الآن بنجاح وعبر الأمان.`);
+    console.log(`🟢 [حالة ممتازة] السيرفر الموحد يستقبل الاتصالات الآن بسلام.`);
 });
+                        
