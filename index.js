@@ -68,7 +68,6 @@ wss.on('connection', (ws) => {
 
                     console.log(`⚙️ تم فتح غرفة برمز: [${roomCode}] نوع: ${roomType} بواسطة: ${creator}`);
                     
-                    // إذا كانت الغرفة مخصصة للمطابقة العشوائية، نضعها في طابور الانتظار
                     if (roomType === "Matchmaking") {
                         matchmakingQueue.push(roomCode);
                     }
@@ -79,11 +78,9 @@ wss.on('connection', (ws) => {
                     const seeker = data.sender_name;
                     console.log(`🔍 اللاعب [${seeker}] يبحث عن مواجهة عشوائية...`);
 
-                    // تنظيف طابور الانتظار من الغرف الوهمية أو المغلقة
                     matchmakingQueue = matchmakingQueue.filter(code => rooms.has(code));
 
                     if (matchmakingQueue.length > 0) {
-                        // جلب أول غرفة في الطابور للمطابقة
                         const targetRoomCode = matchmakingQueue.shift();
                         const room = rooms.get(targetRoomCode);
 
@@ -91,13 +88,11 @@ wss.on('connection', (ws) => {
                             room.players.push(seeker);
                             room.status = "playing";
 
-                            // إبلاغ اللاعب الذي يبحث بنجاح العثور على الغرفة المستهدفة
                             ws.send(JSON.stringify({
                                 action: "friend_found",
                                 target: room.creator
                             }));
 
-                            // ربط الاسمين وتحديث بيانات الاتصال للطرف الآخر
                             const creatorSocket = players.get(room.creator);
                             if (creatorSocket) {
                                 creatorSocket.send(JSON.stringify({
@@ -110,7 +105,6 @@ wss.on('connection', (ws) => {
                             ws.send(JSON.stringify({ action: "room_not_found", message: "ROOM NOT FOUND" }));
                         }
                     } else {
-                        // لا توجد غرف متاحة حالياً، نبلغ الواجهة بـ Room Not Found ليتصرف السكريبت
                         ws.send(JSON.stringify({
                             action: "room_not_found",
                             message: "No available rooms"
@@ -125,7 +119,6 @@ wss.on('connection', (ws) => {
 
                     console.log(`📡 طلب اتصال يدوي من [${senderName}] إلى [${targetFriend}]`);
 
-                    // الفحص: هل توجد غرفة مسجلة باسم هذا الصديق أو الكود؟
                     let foundRoomCode = null;
                     for (let [code, rDetails] of rooms.entries()) {
                         if (code === targetFriend || rDetails.creator === targetFriend) {
@@ -136,22 +129,31 @@ wss.on('connection', (ws) => {
 
                     if (foundRoomCode) {
                         const targetSocket = players.get(targetFriend);
+                        const room = rooms.get(foundRoomCode);
                         
-                        // إرسال نجاح العثور للاعب المنضم لتشغيل دالة _on_join_success()
+                        if (room && !room.players.includes(senderName)) {
+                            room.players.push(senderName);
+                            room.status = "playing";
+                        }
+
+                        // إعلام المنضم بنجاح العثور
                         ws.send(JSON.stringify({
                             action: "friend_found",
                             target: targetFriend
                         }));
 
-                        // إعلام الطرف الآخر بطلب التوصيل (مع فحص أمان للتأكد من اتصال الطرف الآخر)
+                        // ✅ [تعديل الأمان والتزامن]: إرسال المزامنة الكاملة للطرفين فوراً ليقوما ببناء الشخصيات معاً
+                        const syncPayload = JSON.stringify({
+                            action: "room_sync",
+                            host: targetFriend,
+                            guest: senderName
+                        });
+
+                        ws.send(syncPayload); // إرسال للمنضم
                         if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-                            targetSocket.send(JSON.stringify({
-                                action: "receive_request",
-                                sender: senderName
-                            }));
+                            targetSocket.send(syncPayload); // إرسال للمضيف فوراً
                         }
                     } else {
-                        // ✅ [تعديل هائل]: إرسال كائن ملائم يحتوي على قيمة "message" لكي يقرأها كود Godot فوراً ولا يحدث كراش
                         ws.send(JSON.stringify({ 
                             action: "room_not_found", 
                             message: "ROOM CODE DOES NOT EXIST" 
@@ -161,8 +163,8 @@ wss.on('connection', (ws) => {
 
                 // 5️⃣ الربط النهائي وبدء تشغيل المشهد لكلا الهاتفين (bridge_players)
                 case 'bridge_players':
-                    const p1 = data.sender; // الشخص الموافق
-                    const p2 = data.target; // الشخص المستهدف
+                    const p1 = data.sender; 
+                    const p2 = data.target; 
 
                     const s1 = players.get(p1);
                     const s2 = players.get(p2);
@@ -181,13 +183,11 @@ wss.on('connection', (ws) => {
         }
     });
 
-    // إدارة انقطاع الاتصال المفاجئ من الهواتف لتنظيف السيرفر ومنع تعليق الذاكرة
     ws.on('close', () => {
         if (currentPlayerName !== "") {
             console.log(`❌ غادر اللاعب السيرفر: ${currentPlayerName}`);
             players.delete(currentPlayerName);
 
-            // حذف أي غرف كان قد أنشأها لمنع دخول لاعبين لغرف وهمية
             for (let [code, room] of rooms.entries()) {
                 if (room.creator === currentPlayerName) {
                     rooms.delete(code);
@@ -199,7 +199,6 @@ wss.on('connection', (ws) => {
     });
 });
 
-// 4. بدء الإنصات والاستماع على المنفذ المحدد من ريندر
 server.listen(PORT, () => {
     console.log(`🟢 [حالة ممتازة] السيرفر الموحد يستقبل الاتصالات الآن بسلام.`);
 });
